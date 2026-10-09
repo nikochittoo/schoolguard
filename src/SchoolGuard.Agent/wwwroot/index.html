@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SchoolGuard · Panel</title>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:780px;margin:2rem auto;padding:0 1rem;background:#111;color:#eee}
+  h1{color:#ff8a1f;margin-bottom:.2rem} h2{margin-top:2rem;font-size:1.1rem;border-bottom:1px solid #333;padding-bottom:.3rem}
+  input,button{padding:.55rem .7rem;border-radius:6px;border:1px solid #444;background:#1c1c1c;color:#eee;font-size:1rem}
+  button{background:#ff8a1f;color:#111;border:0;cursor:pointer;font-weight:600} button.sec{background:#2a2a2a;color:#eee}
+  .row{display:flex;gap:.5rem;margin:.5rem 0} .row input{flex:1}
+  ul{list-style:none;padding:0} li{display:flex;justify-content:space-between;align-items:center;padding:.35rem .5rem;border-bottom:1px solid #262626}
+  li button{padding:.2rem .5rem;font-size:.85rem} .msg{color:#ffb86b;min-height:1.2rem} small{color:#888}
+  .hide{display:none}
+</style>
+</head>
+<body>
+<h1>SchoolGuard</h1><small id="ver"></small>
+<p class="msg" id="msg"></p>
+
+<section id="auth" class="hide">
+  <h2 id="authTitle"></h2>
+  <div class="row"><input id="u" placeholder="Usuario"></div>
+  <div class="row"><input id="p" type="password" placeholder="Clave (mínimo 8 caracteres)"><button id="authBtn"></button></div>
+</section>
+
+<section id="app" class="hide">
+  <div class="row"><span style="flex:1"></span><button class="sec" id="logout">Cerrar sesión</button></div>
+
+  <h2>Sitios bloqueados</h2>
+  <small>Se bloquea el dominio principal y todos sus subdominios (búsquedas, rutas, etc.).</small>
+  <div class="row"><input id="url" placeholder="https://sitio-a-bloquear.com/cualquier/ruta"><button id="addUrl">Bloquear</button></div>
+  <ul id="domains"></ul>
+
+  <h2>Palabras clave en nombres de sitios</h2>
+  <small>Bloquea cualquier dominio que contenga la palabra. Usar con cuidado: puede dar falsos positivos.</small>
+  <div class="row"><input id="kw" placeholder="palabra"><button id="addKw">Agregar</button></div>
+  <ul id="keywords"></ul>
+
+  <h2>Últimos intentos bloqueados</h2>
+  <div class="row"><button class="sec" id="reloadLogs">Actualizar</button></div>
+  <ul id="logs"></ul>
+</section>
+
+<script>
+const $ = s => document.querySelector(s);
+let token = sessionStorage.getItem('t') || '';
+let mode = 'login';
+
+const say = t => $('#msg').textContent = t || '';
+async function api(path, method = 'GET', body) {
+  const r = await fetch(path, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) }, body: body ? JSON.stringify(body) : undefined });
+  if (r.status === 401 && token) { logout(); }
+  return r;
+}
+function fill(sel, items, onDelete) {
+  const ul = $(sel); ul.replaceChildren();
+  for (const it of items) {
+    const li = document.createElement('li'); const s = document.createElement('span'); s.textContent = it; li.append(s);
+    if (onDelete) { const b = document.createElement('button'); b.className = 'sec'; b.textContent = 'Quitar'; b.onclick = () => onDelete(it); li.append(b); }
+    ul.append(li);
+  }
+}
+async function load() {
+  fill('#domains', await (await api('/api/admin/domains')).json(), async h => { await api('/api/admin/domains/' + encodeURIComponent(h), 'DELETE'); load(); });
+  fill('#keywords', await (await api('/api/admin/keywords')).json(), async w => { await api('/api/admin/keywords/' + encodeURIComponent(w), 'DELETE'); load(); });
+  fill('#logs', await (await api('/api/admin/logs')).json());
+}
+function show(view) {
+  $('#auth').classList.toggle('hide', view === 'app');
+  $('#app').classList.toggle('hide', view !== 'app');
+  if (view !== 'app') { $('#authTitle').textContent = mode === 'setup' ? 'Crear administrador inicial' : 'Iniciar sesión'; $('#authBtn').textContent = mode === 'setup' ? 'Crear' : 'Entrar'; }
+}
+function logout() { token = ''; sessionStorage.removeItem('t'); mode = 'login'; show('auth'); }
+
+$('#authBtn').onclick = async () => {
+  say('');
+  const body = { user: $('#u').value, password: $('#p').value };
+  if (mode === 'setup') {
+    const r = await api('/api/setup', 'POST', body);
+    if (!r.ok) return say((await r.json()).error);
+    mode = 'login'; say('Administrador creado. Ahora iniciá sesión.'); show('auth'); return;
+  }
+  const r = await api('/api/login', 'POST', body);
+  if (!r.ok) return say('Usuario o clave incorrectos (tras 5 intentos fallidos hay que esperar 1 minuto).');
+  token = (await r.json()).token; sessionStorage.setItem('t', token); show('app'); load();
+};
+$('#logout').onclick = logout;
+$('#reloadLogs').onclick = load;
+
+async function addUrl(force) {
+  say('Verificando sitio…');
+  const r = await api('/api/admin/domains', 'POST', { url: $('#url').value, force });
+  if (r.ok) { say(''); $('#url').value = ''; return load(); }
+  const e = await r.json();
+  if (r.status === 422 && e.canForce && confirm(e.host + ' no responde. ¿Bloquear igual?')) return addUrl(true);
+  say(e.error || 'Error');
+}
+$('#addUrl').onclick = () => addUrl(false);
+$('#addKw').onclick = async () => {
+  const r = await api('/api/admin/keywords', 'POST', { word: $('#kw').value });
+  if (r.ok) { $('#kw').value = ''; say(''); load(); } else say((await r.json()).error);
+};
+
+(async () => {
+  const s = await (await fetch('/api/status')).json();
+  $('#ver').textContent = 'v' + s.version;
+  mode = s.hasUsers ? 'login' : 'setup';
+  if (s.hasUsers && token) { show('app'); load(); } else show('auth');
+})();
+</script>
+</body>
+</html>

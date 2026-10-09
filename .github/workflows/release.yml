@@ -1,0 +1,49 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Versión desde el tag
+        shell: pwsh
+        run: echo "VERSION=$($env:GITHUB_REF_NAME.TrimStart('v'))" >> $env:GITHUB_ENV
+
+      - name: Publicar agente y updater
+        shell: pwsh
+        run: |
+          dotnet publish src/SchoolGuard.Agent   -c Release -r win-x64 --self-contained -p:Version=$env:VERSION -o publish/agent
+          dotnet publish src/SchoolGuard.Updater -c Release -r win-x64 --self-contained -p:Version=$env:VERSION -o publish/updater
+
+      - name: Zip del agente + SHA-256
+        shell: pwsh
+        run: |
+          Compress-Archive -Path publish/agent/* -DestinationPath agent-win-x64.zip
+          $h = (Get-FileHash agent-win-x64.zip -Algorithm SHA256).Hash.ToLower()
+          "$h  agent-win-x64.zip" | Out-File SHA256SUMS.txt -Encoding ascii
+
+      - name: Instalador (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyVersion=$env:VERSION installer\schoolguard.iss
+
+      - name: Publicar release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            agent-win-x64.zip
+            SHA256SUMS.txt
+            dist/SchoolGuard-Setup-*.exe
