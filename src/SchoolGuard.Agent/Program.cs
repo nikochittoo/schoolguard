@@ -17,6 +17,7 @@ builder.Services.AddSingleton<BlockLog>();
 builder.Services.AddSingleton<AuthService>();
 builder.Services.AddHostedService<DnsServer>();
 builder.Services.AddHostedService<DnsEnforcer>();
+builder.Services.AddHostedService<UninstallGate>();
 
 var app = builder.Build();
 app.UseDefaultFiles();
@@ -46,13 +47,14 @@ var secure = app.MapGroup("/api/admin").AddEndpointFilter(async (ctx, next) =>
     return auth.Valid(token) ? await next(ctx) : Results.Unauthorized();
 });
 
+// Lista manual
 secure.MapGet("/domains", (Blocklist b) => b.All());
 
 secure.MapPost("/domains", async (AddReq r, Blocklist b) =>
 {
     var host = Blocklist.Normalize(r.Url);
     if (host is null) return Results.BadRequest(new { error = "URL inválida." });
-    if (b.IsBlocked(host)) return Results.Conflict(new { error = "Ya está bloqueado (por el dominio o una palabra clave)." });
+    if (b.IsBlocked(host)) return Results.Conflict(new { error = "Ya está bloqueado (por el dominio, una categoría o una palabra clave)." });
 
     bool reachable = await Reach(host);
     if (!reachable && !r.Force)
@@ -63,11 +65,62 @@ secure.MapPost("/domains", async (AddReq r, Blocklist b) =>
 });
 
 secure.MapDelete("/domains/{host}", (string host, Blocklist b) => b.Remove(host) ? Results.Ok() : Results.NotFound());
+
+// Categorías (listas públicas importadas)
+secure.MapGet("/categories", (Blocklist b) => b.Categories());
+
+secure.MapPost("/categories/import", async (ImportReq r, Blocklist b, CancellationToken ct) =>
+{
+    var name = (r.Name ?? "").Trim().ToLowerInvariant();
+    if (!Blocklist.ValidCategory(name))
+        return Results.BadRequest(new { error = "Nombre inválido: usá minúsculas, números, - o _ (hasta 30 caracteres)." });
+    try
+    {
+        var set = await ListImporter.FetchAsync(r.Url, ct);
+        if (set.Count == 0) return Results.BadRequest(new { error = "La lista no tiene dominios reconocibles." });
+        b.SetCategory(name, set);
+        return Results.Ok(new { name, count = set.Count });
+    }
+    catch (Exception e)
+    {
+        return Results.BadRequest(new { error = "No se pudo descargar la lista: " + e.Message });
+    }
+});
+
+secure.MapPost("/categories/{name}/enabled", (string name, EnabledReq r, Blocklist b) =>
+    b.SetEnabled(name, r.Enabled) ? Results.Ok() : Results.NotFound());
+secure.MapDelete("/categories/{name}", (string name, Blocklist b) =>
+    b.RemoveCategory(name) ? Results.Ok() : Results.NotFound());
+
+// Lista blanca
+secure.MapGet("/whitelist", (Blocklist b) => b.Whitelist());
+secure.MapPost("/whitelist", (AddReq r, Blocklist b) =>
+{
+    var host = Blocklist.Normalize(r.Url);
+    if (host is null) return Results.BadRequest(new { error = "URL inválida." });
+    return b.AddWhite(host) ? Results.Ok(new { host }) : Results.Conflict(new { error = "Ya estaba en la lista blanca." });
+});
+secure.MapDelete("/whitelist/{host}", (string host, Blocklist b) => b.RemoveWhite(host) ? Results.Ok() : Results.NotFound());
+
+// Palabras clave
 secure.MapGet("/keywords", (Blocklist b) => b.Keywords());
 secure.MapPost("/keywords", (KwReq r, Blocklist b) =>
     b.AddKeyword(r.Word) ? Results.Ok() : Results.BadRequest(new { error = "Palabra inválida, muy corta (mínimo 3) o repetida." }));
 secure.MapDelete("/keywords/{word}", (string word, Blocklist b) => b.RemoveKeyword(word) ? Results.Ok() : Results.NotFound());
+
+// Registro y desinstalación
 secure.MapGet("/logs", (BlockLog l) => l.Recent());
+
+secure.MapPost("/allow-uninstall", () =>
+{
+    File.WriteAllText(AppPaths.UninstallFlag, DateTime.UtcNow.ToString("o"));
+    return Results.Ok(new { minutes = 30 });
+});
+secure.MapPost("/cancel-uninstall", () =>
+{
+    try { File.Delete(AppPaths.UninstallFlag); } catch { }
+    return Results.Ok();
+});
 
 app.Run();
 
@@ -86,3 +139,5 @@ static async Task<bool> Reach(string host)
 record Cred(string User, string Password);
 record AddReq(string Url, bool Force);
 record KwReq(string Word);
+record ImportReq(string Name, string Url);
+record EnabledReq(bool Enabled);

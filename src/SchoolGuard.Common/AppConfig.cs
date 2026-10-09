@@ -11,8 +11,17 @@ public class AppConfig
     /// <summary>DNS real al que se reenvían las consultas no bloqueadas.</summary>
     public string UpstreamDns { get; set; } = "8.8.8.8";
     public int PanelPort { get; set; } = 8787;
-    /// <summary>Si es true, el agente fuerza el DNS de la PC a 127.0.0.1. Ponelo en false para desarrollar.</summary>
+
+    /// <summary>Modo estricto: fuerza el DNS de la PC a 127.0.0.1, aplica políticas de navegador
+    /// y reglas de firewall. Ponelo en false para probar sin tocar la PC.</summary>
     public bool EnforceDns { get; set; } = true;
+    /// <summary>(v0.2) Bloquea nombres de servidores DNS-sobre-HTTPS conocidos.</summary>
+    public bool BlockDohHosts { get; set; } = true;
+    /// <summary>(v0.2) En modo estricto, bloquea consultas DNS (puerto 53) hacia cualquier servidor
+    /// que no sea UpstreamDns, y DNS-sobre-TLS (puerto 853).</summary>
+    public bool BlockExternalDns { get; set; } = true;
+    /// <summary>(v0.2) Restringe la carpeta de datos a SYSTEM y Administradores.</summary>
+    public bool HardenDataDir { get; set; } = true;
 
     public static AppConfig Load()
     {

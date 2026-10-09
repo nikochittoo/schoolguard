@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>SchoolGuard · Panel</title>
 <style>
-  body{font-family:system-ui,sans-serif;max-width:780px;margin:2rem auto;padding:0 1rem;background:#111;color:#eee}
+  body{font-family:system-ui,sans-serif;max-width:820px;margin:2rem auto;padding:0 1rem;background:#111;color:#eee}
   h1{color:#ff8a1f;margin-bottom:.2rem} h2{margin-top:2rem;font-size:1.1rem;border-bottom:1px solid #333;padding-bottom:.3rem}
   input,button{padding:.55rem .7rem;border-radius:6px;border:1px solid #444;background:#1c1c1c;color:#eee;font-size:1rem}
   button{background:#ff8a1f;color:#111;border:0;cursor:pointer;font-weight:600} button.sec{background:#2a2a2a;color:#eee}
-  .row{display:flex;gap:.5rem;margin:.5rem 0} .row input{flex:1}
-  ul{list-style:none;padding:0} li{display:flex;justify-content:space-between;align-items:center;padding:.35rem .5rem;border-bottom:1px solid #262626}
+  .row{display:flex;gap:.5rem;margin:.5rem 0;flex-wrap:wrap} .row input{flex:1;min-width:140px}
+  ul{list-style:none;padding:0} li{display:flex;justify-content:space-between;align-items:center;gap:.5rem;padding:.35rem .5rem;border-bottom:1px solid #262626}
   li button{padding:.2rem .5rem;font-size:.85rem} .msg{color:#ffb86b;min-height:1.2rem} small{color:#888}
-  .hide{display:none}
+  .off{opacity:.5} .grow{flex:1} .hide{display:none} .chips button{font-size:.85rem;padding:.3rem .6rem}
 </style>
 </head>
 <body>
@@ -26,12 +26,27 @@
 </section>
 
 <section id="app" class="hide">
-  <div class="row"><span style="flex:1"></span><button class="sec" id="logout">Cerrar sesión</button></div>
+  <div class="row"><span class="grow"></span><button class="sec" id="logout">Cerrar sesión</button></div>
 
-  <h2>Sitios bloqueados</h2>
+  <h2>Sitios bloqueados (lista manual)</h2>
   <small>Se bloquea el dominio principal y todos sus subdominios (búsquedas, rutas, etc.).</small>
   <div class="row"><input id="url" placeholder="https://sitio-a-bloquear.com/cualquier/ruta"><button id="addUrl">Bloquear</button></div>
   <ul id="domains"></ul>
+
+  <h2>Categorías (listas públicas)</h2>
+  <small>Importá listas grandes ya armadas. Podés activarlas o desactivarlas, y volver a importar para actualizarlas.</small>
+  <div class="row chips">
+    <button class="sec" data-name="adultos" data-url="https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts">Adultos</button>
+    <button class="sec" data-name="redes" data-url="https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/social-only/hosts">Redes sociales</button>
+    <button class="sec" data-name="apuestas" data-url="https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/gambling-only/hosts">Apuestas</button>
+  </div>
+  <div class="row"><input id="catName" placeholder="nombre (ej: adultos)" style="max-width:200px"><input id="catUrl" placeholder="URL de la lista (formato hosts, adblock o un dominio por línea)"><button id="importCat">Importar</button></div>
+  <ul id="categories"></ul>
+
+  <h2>Lista blanca</h2>
+  <small>Sitios que nunca se bloquean, aunque estén en una categoría o contengan una palabra clave.</small>
+  <div class="row"><input id="wl" placeholder="sitio-permitido.com"><button id="addWl">Permitir</button></div>
+  <ul id="whitelist"></ul>
 
   <h2>Palabras clave en nombres de sitios</h2>
   <small>Bloquea cualquier dominio que contenga la palabra. Usar con cuidado: puede dar falsos positivos.</small>
@@ -41,6 +56,10 @@
   <h2>Últimos intentos bloqueados</h2>
   <div class="row"><button class="sec" id="reloadLogs">Actualizar</button></div>
   <ul id="logs"></ul>
+
+  <h2>Desinstalación</h2>
+  <small>El programa no se puede desinstalar salvo que se autorice desde acá. La autorización vence a los 30 minutos.</small>
+  <div class="row"><button class="sec" id="allowUn">Autorizar desinstalación</button><button class="sec" id="cancelUn">Cancelar autorización</button></div>
 </section>
 
 <script>
@@ -54,17 +73,31 @@ async function api(path, method = 'GET', body) {
   if (r.status === 401 && token) { logout(); }
   return r;
 }
+function btn(text, onclick) { const b = document.createElement('button'); b.className = 'sec'; b.textContent = text; b.onclick = onclick; return b; }
 function fill(sel, items, onDelete) {
   const ul = $(sel); ul.replaceChildren();
   for (const it of items) {
-    const li = document.createElement('li'); const s = document.createElement('span'); s.textContent = it; li.append(s);
-    if (onDelete) { const b = document.createElement('button'); b.className = 'sec'; b.textContent = 'Quitar'; b.onclick = () => onDelete(it); li.append(b); }
+    const li = document.createElement('li'); const s = document.createElement('span'); s.className = 'grow'; s.textContent = it; li.append(s);
+    if (onDelete) li.append(btn('Quitar', () => onDelete(it)));
     ul.append(li);
   }
 }
+function fillCats(cats) {
+  const ul = $('#categories'); ul.replaceChildren();
+  for (const c of cats) {
+    const li = document.createElement('li'); if (!c.enabled) li.className = 'off';
+    const s = document.createElement('span'); s.className = 'grow'; s.textContent = c.name + ' · ' + c.count.toLocaleString() + ' sitios'; li.append(s);
+    li.append(btn(c.enabled ? 'Activa' : 'Inactiva', async () => { await api('/api/admin/categories/' + encodeURIComponent(c.name) + '/enabled', 'POST', { enabled: !c.enabled }); load(); }));
+    li.append(btn('Quitar', async () => { if (confirm('¿Quitar la categoría ' + c.name + '?')) { await api('/api/admin/categories/' + encodeURIComponent(c.name), 'DELETE'); load(); } }));
+    ul.append(li);
+  }
+}
+const del = path => async v => { await api(path + encodeURIComponent(v), 'DELETE'); load(); };
 async function load() {
-  fill('#domains', await (await api('/api/admin/domains')).json(), async h => { await api('/api/admin/domains/' + encodeURIComponent(h), 'DELETE'); load(); });
-  fill('#keywords', await (await api('/api/admin/keywords')).json(), async w => { await api('/api/admin/keywords/' + encodeURIComponent(w), 'DELETE'); load(); });
+  fill('#domains', await (await api('/api/admin/domains')).json(), del('/api/admin/domains/'));
+  fillCats(await (await api('/api/admin/categories')).json());
+  fill('#whitelist', await (await api('/api/admin/whitelist')).json(), del('/api/admin/whitelist/'));
+  fill('#keywords', await (await api('/api/admin/keywords')).json(), del('/api/admin/keywords/'));
   fill('#logs', await (await api('/api/admin/logs')).json());
 }
 function show(view) {
@@ -98,10 +131,25 @@ async function addUrl(force) {
   say(e.error || 'Error');
 }
 $('#addUrl').onclick = () => addUrl(false);
+
+document.querySelectorAll('.chips button').forEach(b => b.onclick = () => { $('#catName').value = b.dataset.name; $('#catUrl').value = b.dataset.url; });
+$('#importCat').onclick = async () => {
+  say('Descargando lista… puede tardar unos segundos.');
+  const r = await api('/api/admin/categories/import', 'POST', { name: $('#catName').value, url: $('#catUrl').value });
+  const e = await r.json();
+  if (r.ok) { say('Importados ' + e.count.toLocaleString() + ' sitios en "' + e.name + '".'); $('#catName').value = ''; $('#catUrl').value = ''; load(); } else say(e.error);
+};
+
+$('#addWl').onclick = async () => {
+  const r = await api('/api/admin/whitelist', 'POST', { url: $('#wl').value });
+  if (r.ok) { say(''); $('#wl').value = ''; load(); } else say((await r.json()).error);
+};
 $('#addKw').onclick = async () => {
   const r = await api('/api/admin/keywords', 'POST', { word: $('#kw').value });
   if (r.ok) { $('#kw').value = ''; say(''); load(); } else say((await r.json()).error);
 };
+$('#allowUn').onclick = async () => { await api('/api/admin/allow-uninstall', 'POST'); say('Desinstalación autorizada por 30 minutos.'); };
+$('#cancelUn').onclick = async () => { await api('/api/admin/cancel-uninstall', 'POST'); say('Autorización cancelada.'); };
 
 (async () => {
   const s = await (await fetch('/api/status')).json();

@@ -4,8 +4,8 @@ using SchoolGuard.Common;
 
 namespace SchoolGuard.Agent;
 
-/// <summary>Cada minuto revisa que todas las placas de red activas usen 127.0.0.1 como DNS
-/// y, si alguien lo cambió, lo vuelve a poner.</summary>
+/// <summary>Modo estricto: cada minuto revisa que las placas de red usen 127.0.0.1 como DNS,
+/// reaplica las políticas de navegador y (cada 10 minutos) las reglas de firewall.</summary>
 public class DnsEnforcer(AppConfig cfg, ILogger<DnsEnforcer> logger) : BackgroundService
 {
     const string Script =
@@ -17,16 +17,33 @@ public class DnsEnforcer(AppConfig cfg, ILogger<DnsEnforcer> logger) : Backgroun
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        if (!cfg.EnforceDns) { logger.LogWarning("EnforceDns=false: no se fuerza el DNS de la PC."); return; }
         await Task.Delay(3000, ct); // deja que el servidor DNS arranque primero
+
+        if (cfg.HardenDataDir) DataHardening.Apply(logger);
+
+        if (!cfg.EnforceDns)
+        {
+            logger.LogWarning("EnforceDns=false: modo de prueba, no se toca el DNS, el firewall ni los navegadores.");
+            FirewallGuard.Remove(logger);
+            return;
+        }
+
+        int tick = 0;
         while (!ct.IsCancellationRequested)
         {
-            try { Apply(); } catch (Exception e) { logger.LogWarning(e, "No se pudo aplicar el DNS"); }
+            try
+            {
+                ApplyDns();
+                BrowserPolicy.Apply(logger);
+                if (tick % 10 == 0) FirewallGuard.Apply(cfg, logger);
+            }
+            catch (Exception e) { logger.LogWarning(e, "No se pudo aplicar el modo estricto"); }
+            tick++;
             await Task.Delay(TimeSpan.FromSeconds(60), ct);
         }
     }
 
-    static void Apply()
+    static void ApplyDns()
     {
         var enc = Convert.ToBase64String(Encoding.Unicode.GetBytes(Script));
         var psi = new ProcessStartInfo("powershell.exe",
